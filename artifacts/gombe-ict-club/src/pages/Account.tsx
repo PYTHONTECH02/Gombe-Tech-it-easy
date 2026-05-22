@@ -30,9 +30,172 @@ const ROLE_CONFIG = {
 };
 
 // ── Admin Controls Panel ──────────────────────────────────────────────────────
+const DB_SETUP_SQL = `-- ╔══════════════════════════════════════════════════════╗
+-- ║  GOMBE ICT CLUB — Full Database Setup               ║
+-- ║  Paste into: Supabase Dashboard → SQL Editor → Run  ║
+-- ╚══════════════════════════════════════════════════════╝
+
+-- Helper: check if calling user is admin (SECURITY DEFINER avoids recursive RLS)
+CREATE OR REPLACE FUNCTION public.is_club_admin()
+RETURNS boolean LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public AS $$
+  SELECT COALESCE((SELECT role IN ('admin','super_admin') FROM public.profiles WHERE id = auth.uid()),false);
+$$;
+
+-- 1. profiles
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email text, full_name text,
+  role text NOT NULL DEFAULT 'student' CHECK (role IN ('student','admin','super_admin')),
+  avatar_url text, bio text, created_at timestamptz DEFAULT now()
+);
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "profiles_select" ON public.profiles;
+CREATE POLICY "profiles_select" ON public.profiles FOR SELECT USING (auth.role() = 'authenticated');
+DROP POLICY IF EXISTS "profiles_insert" ON public.profiles;
+CREATE POLICY "profiles_insert" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);
+DROP POLICY IF EXISTS "profiles_update" ON public.profiles;
+CREATE POLICY "profiles_update" ON public.profiles FOR UPDATE USING (auth.uid() = id OR public.is_club_admin());
+DROP POLICY IF EXISTS "profiles_delete" ON public.profiles;
+CREATE POLICY "profiles_delete" ON public.profiles FOR DELETE USING (auth.uid() = id);
+
+-- 2. announcements
+CREATE TABLE IF NOT EXISTS public.announcements (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL, body text NOT NULL, tag text NOT NULL DEFAULT 'INFO',
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "announcements_select" ON public.announcements;
+CREATE POLICY "announcements_select" ON public.announcements FOR SELECT USING (true);
+DROP POLICY IF EXISTS "announcements_insert" ON public.announcements;
+CREATE POLICY "announcements_insert" ON public.announcements FOR INSERT WITH CHECK (public.is_club_admin());
+DROP POLICY IF EXISTS "announcements_delete" ON public.announcements;
+CREATE POLICY "announcements_delete" ON public.announcements FOR DELETE USING (public.is_club_admin());
+
+-- 3. gaming_sessions
+CREATE TABLE IF NOT EXISTS public.gaming_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  console text NOT NULL CHECK (console IN ('ps4','ps5')),
+  title text NOT NULL, day text NOT NULL, month text NOT NULL, year text,
+  time text NOT NULL, venue text, game_type text, slots integer,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE public.gaming_sessions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "gaming_sessions_select" ON public.gaming_sessions;
+CREATE POLICY "gaming_sessions_select" ON public.gaming_sessions FOR SELECT USING (true);
+DROP POLICY IF EXISTS "gaming_sessions_insert" ON public.gaming_sessions;
+CREATE POLICY "gaming_sessions_insert" ON public.gaming_sessions FOR INSERT WITH CHECK (public.is_club_admin());
+DROP POLICY IF EXISTS "gaming_sessions_delete" ON public.gaming_sessions;
+CREATE POLICY "gaming_sessions_delete" ON public.gaming_sessions FOR DELETE USING (public.is_club_admin());
+
+-- 4. schedules
+CREATE TABLE IF NOT EXISTS public.schedules (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL, date date NOT NULL, time text NOT NULL,
+  location text, description text, type text DEFAULT 'meeting',
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE public.schedules ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "schedules_select" ON public.schedules;
+CREATE POLICY "schedules_select" ON public.schedules FOR SELECT USING (true);
+DROP POLICY IF EXISTS "schedules_insert" ON public.schedules;
+CREATE POLICY "schedules_insert" ON public.schedules FOR INSERT WITH CHECK (public.is_club_admin());
+DROP POLICY IF EXISTS "schedules_delete" ON public.schedules;
+CREATE POLICY "schedules_delete" ON public.schedules FOR DELETE USING (public.is_club_admin());
+
+-- 5. officers (Members / Leadership page)
+CREATE TABLE IF NOT EXISTS public.officers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL, role_title text NOT NULL, class_year text,
+  bio text, skills text[], color text DEFAULT '#FFE500',
+  sort_order integer DEFAULT 0, created_at timestamptz DEFAULT now()
+);
+ALTER TABLE public.officers ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "officers_select" ON public.officers;
+CREATE POLICY "officers_select" ON public.officers FOR SELECT USING (true);
+DROP POLICY IF EXISTS "officers_insert" ON public.officers;
+CREATE POLICY "officers_insert" ON public.officers FOR INSERT WITH CHECK (public.is_club_admin());
+DROP POLICY IF EXISTS "officers_update" ON public.officers;
+CREATE POLICY "officers_update" ON public.officers FOR UPDATE USING (public.is_club_admin());
+DROP POLICY IF EXISTS "officers_delete" ON public.officers;
+CREATE POLICY "officers_delete" ON public.officers FOR DELETE USING (public.is_club_admin());
+
+-- 6. coding_progress
+CREATE TABLE IF NOT EXISTS public.coding_progress (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  lesson_id text NOT NULL, completed boolean DEFAULT true,
+  completed_at timestamptz DEFAULT now(), UNIQUE(user_id, lesson_id)
+);
+ALTER TABLE public.coding_progress ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "coding_progress_own" ON public.coding_progress;
+CREATE POLICY "coding_progress_own" ON public.coding_progress
+  USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- 7. coding_exam_scores
+CREATE TABLE IF NOT EXISTS public.coding_exam_scores (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  lesson_id text NOT NULL, score integer NOT NULL, total integer NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE public.coding_exam_scores ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "coding_scores_own" ON public.coding_exam_scores;
+CREATE POLICY "coding_scores_own" ON public.coding_exam_scores
+  USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- 8. cyber_progress
+CREATE TABLE IF NOT EXISTS public.cyber_progress (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  lesson_id text NOT NULL, completed boolean DEFAULT true,
+  completed_at timestamptz DEFAULT now(), UNIQUE(user_id, lesson_id)
+);
+ALTER TABLE public.cyber_progress ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "cyber_progress_own" ON public.cyber_progress;
+CREATE POLICY "cyber_progress_own" ON public.cyber_progress
+  USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- 9. cyber_exam_scores
+CREATE TABLE IF NOT EXISTS public.cyber_exam_scores (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  lesson_id text NOT NULL, score integer NOT NULL, total integer NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE public.cyber_exam_scores ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "cyber_scores_own" ON public.cyber_exam_scores;
+CREATE POLICY "cyber_scores_own" ON public.cyber_exam_scores
+  USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- 10. Auto-create profile row on every new sign-up
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  INSERT INTO public.profiles (id, email, full_name, role, avatar_url)
+  VALUES (
+    NEW.id, NEW.email,
+    COALESCE(NEW.raw_user_meta_data->>'full_name',''),
+    CASE WHEN NEW.email = 'hpro453176@gmail.com' THEN 'super_admin' ELSE 'student' END,
+    COALESCE(NEW.raw_user_meta_data->>'avatar_url','')
+  )
+  ON CONFLICT (id) DO UPDATE
+    SET email=EXCLUDED.email,
+        full_name=COALESCE(EXCLUDED.full_name,profiles.full_name),
+        avatar_url=COALESCE(EXCLUDED.avatar_url,profiles.avatar_url);
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- Done! All tables, RLS policies, and auto-profile trigger are ready.`;
+
 function AdminPanel({ role }: { role: string }) {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<'announcements' | 'gaming' | 'schedule'>('announcements');
+  const [activeTab, setActiveTab] = useState<'announcements' | 'gaming' | 'schedule' | 'setup'>('announcements');
+  const [sqlCopied, setSqlCopied] = useState(false);
 
   // Announcement form
   const [annTitle, setAnnTitle] = useState('');
@@ -186,7 +349,7 @@ function AdminPanel({ role }: { role: string }) {
       </p>
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex flex-wrap gap-2 mb-6">
         {(['announcements', 'gaming', 'schedule'] as const).map(tab => (
           <button
             key={tab}
@@ -196,6 +359,14 @@ function AdminPanel({ role }: { role: string }) {
             {tab === 'announcements' ? '📢 News' : tab === 'gaming' ? '🎮 Gaming' : '📅 Schedule'}
           </button>
         ))}
+        {role === 'super_admin' && (
+          <button
+            onClick={() => setActiveTab('setup')}
+            className={`px-4 py-2 font-bold uppercase text-sm border-[2px] border-[#0A0A0A] transition-all ${activeTab === 'setup' ? 'bg-[#0A0A0A] text-white' : 'bg-white text-[#0A0A0A] hover:bg-gray-100'}`}
+          >
+            ⚙️ DB Setup
+          </button>
+        )}
       </div>
 
       {/* ── Announcements Tab ── */}
@@ -360,6 +531,63 @@ function AdminPanel({ role }: { role: string }) {
           </div>
         </div>
       )}
+
+      {/* ── DB Setup Tab (super_admin only) ── */}
+      {activeTab === 'setup' && role === 'super_admin' && (
+        <div className="space-y-4">
+          {/* Instructions banner */}
+          <div className="bg-[#0A0A0A] text-white border-[3px] border-[#0A0A0A] p-5">
+            <h3 className="font-bold uppercase text-base mb-3 text-[#FFE500]">⚙️ Database Setup — Run This Once</h3>
+            <ol className="space-y-2 text-sm font-bold list-decimal list-inside text-gray-300">
+              <li>Open your <a href={`${import.meta.env.VITE_SUPABASE_URL?.replace('https://','https://supabase.com/dashboard/project/').split('.supabase.co')[0]}/editor`} target="_blank" rel="noreferrer" className="text-[#FFE500] underline hover:text-white">Supabase SQL Editor</a></li>
+              <li>Click <span className="text-white">"New query"</span></li>
+              <li>Copy the entire SQL below and paste it in</li>
+              <li>Click <span className="text-white">"Run"</span> (or press Ctrl+Enter)</li>
+              <li>Come back here — everything will work!</li>
+            </ol>
+            <p className="mt-3 text-xs text-gray-500 font-bold">
+              This is safe to run multiple times. It uses CREATE TABLE IF NOT EXISTS and DROP POLICY IF EXISTS so it won't break anything.
+            </p>
+          </div>
+
+          {/* Copy SQL block */}
+          <div className="bg-white border-[3px] border-[#0A0A0A] p-5">
+            <div className="flex justify-between items-center mb-3">
+              <span className="font-bold uppercase text-xs text-gray-500">Complete SQL Script</span>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(DB_SETUP_SQL).then(() => {
+                    setSqlCopied(true);
+                    setTimeout(() => setSqlCopied(false), 2500);
+                  });
+                }}
+                className={`px-4 py-2 font-bold uppercase text-xs border-[2px] border-[#0A0A0A] transition-all ${sqlCopied ? 'bg-[#00E676] text-[#0A0A0A]' : 'bg-[#FFE500] text-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-white'}`}
+              >
+                {sqlCopied ? '✅ Copied!' : '📋 Copy SQL'}
+              </button>
+            </div>
+            <pre className="bg-[#0A0A0A] text-[#00E676] text-xs font-mono p-4 overflow-auto max-h-80 leading-relaxed whitespace-pre-wrap border-[2px] border-[#0A0A0A]">
+              {DB_SETUP_SQL}
+            </pre>
+          </div>
+
+          {/* Supabase dashboard link */}
+          <div className="bg-white border-[3px] border-[#0A0A0A] p-5 flex items-center justify-between">
+            <div>
+              <p className="font-bold text-sm text-[#0A0A0A]">Go directly to Supabase SQL Editor</p>
+              <p className="text-xs text-gray-500 font-bold mt-0.5">Sign in to Supabase, find your project, and open SQL Editor.</p>
+            </div>
+            <a
+              href="https://supabase.com/dashboard"
+              target="_blank"
+              rel="noreferrer"
+              className="bg-[#2563FF] text-white font-bold uppercase text-xs px-5 py-3 border-[2px] border-[#0A0A0A] hover:bg-[#0A0A0A] transition-all shrink-0"
+            >
+              Open Supabase →
+            </a>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -379,6 +607,8 @@ export default function Account() {
   const [cyberScores, setCyberScores] = useState<any[]>([]);
 
   const [users, setUsers] = useState<any[]>([]);
+  const [usersError, setUsersError] = useState<string | null>(null);
+  const [usersLoading, setUsersLoading] = useState(false);
   const [searchEmail, setSearchEmail] = useState('');
   const [dataLoaded, setDataLoaded] = useState(false);
 
@@ -416,10 +646,24 @@ export default function Account() {
   };
 
   const fetchUsers = async () => {
+    setUsersLoading(true);
+    setUsersError(null);
     try {
-      const { data } = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
-      if (data) setUsers(data);
-    } catch (e) {}
+      const { data, error } = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
+      if (error) {
+        if (error.code === '42P01') {
+          setUsersError('DB not set up yet — go to Admin Controls → ⚙️ DB Setup and run the SQL first.');
+        } else {
+          setUsersError(error.message);
+        }
+      } else if (data) {
+        setUsers(data);
+      }
+    } catch (e: any) {
+      setUsersError(e.message || 'Failed to load users');
+    } finally {
+      setUsersLoading(false);
+    }
   };
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
@@ -675,62 +919,88 @@ export default function Account() {
         {/* Super Admin — User Management Console */}
         {role === 'super_admin' && (
           <div className="bg-[#FF3B3B] border-[3px] border-[#0A0A0A] neubrutalism-box p-8">
-            <h2 className="font-display text-4xl mb-2 text-[#0A0A0A]">USER MANAGEMENT</h2>
+            <div className="flex justify-between items-start mb-2">
+              <h2 className="font-display text-4xl text-[#0A0A0A]">USER MANAGEMENT</h2>
+              <button
+                onClick={fetchUsers}
+                disabled={usersLoading}
+                className="bg-[#0A0A0A] text-white font-bold uppercase text-xs px-4 py-2 border-[2px] border-[#0A0A0A] hover:bg-gray-800 disabled:opacity-50 shrink-0"
+              >
+                {usersLoading ? 'Loading…' : '🔄 Refresh'}
+              </button>
+            </div>
             <p className="font-bold mb-6 text-[#0A0A0A]">Assign admin roles and manage all members.</p>
-            <input
-              placeholder="Filter by email..."
-              value={searchEmail}
-              onChange={(e) => setSearchEmail(e.target.value)}
-              className="w-full border-[3px] border-[#0A0A0A] p-3 font-bold mb-4 focus:outline-none"
-            />
-            <div className="bg-white border-[3px] border-[#0A0A0A] overflow-x-auto">
-              <table className="w-full text-left min-w-[400px]">
-                <thead className="bg-gray-100 border-b-[3px] border-[#0A0A0A]">
-                  <tr>
-                    <th className="p-3 font-bold text-xs uppercase">User</th>
-                    <th className="p-3 font-bold text-xs uppercase">Current Role</th>
-                    <th className="p-3 font-bold text-xs uppercase text-right">Change Role</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users
-                    .filter((u) => u.email?.toLowerCase().includes(searchEmail.toLowerCase()))
-                    .map((u) => {
-                      const uConfig = ROLE_CONFIG[u.role as keyof typeof ROLE_CONFIG] || ROLE_CONFIG.student;
-                      return (
-                        <tr key={u.id} className="border-b border-gray-200 last:border-0">
-                          <td className="p-3">
-                            <p className="font-bold text-sm">{u.email}</p>
-                            <p className="text-xs text-gray-500">{u.full_name || '—'}</p>
-                          </td>
-                          <td className="p-3">
-                            <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-bold uppercase border-[2px] border-[#0A0A0A] ${uConfig.bg} ${uConfig.text}`}>
-                              {uConfig.icon} {uConfig.label}
-                            </span>
-                          </td>
-                          <td className="p-3 text-right">
-                            {u.role !== 'super_admin' && (
-                              <select
-                                value={u.role}
-                                onChange={(e) => handleRoleChange(u.id, e.target.value)}
-                                className="bg-white border-[2px] border-[#0A0A0A] text-xs font-bold p-2 uppercase cursor-pointer"
-                              >
-                                <option value="student">Student</option>
-                                <option value="admin">Admin</option>
-                              </select>
-                            )}
+
+            {usersError ? (
+              <div className="bg-[#0A0A0A] border-[3px] border-[#0A0A0A] p-5 text-center">
+                <p className="text-[#FF3B3B] font-bold text-sm mb-2">⚠️ Could not load members</p>
+                <p className="text-gray-400 text-xs font-bold mb-3">{usersError}</p>
+                <p className="text-[#FFE500] text-xs font-bold">→ Scroll up to Admin Controls and click the ⚙️ DB Setup tab to run the SQL.</p>
+              </div>
+            ) : usersLoading ? (
+              <div className="bg-white border-[3px] border-[#0A0A0A] p-8 text-center">
+                <p className="font-bold text-gray-500 animate-pulse">Loading members…</p>
+              </div>
+            ) : (
+              <>
+                <input
+                  placeholder="Filter by email..."
+                  value={searchEmail}
+                  onChange={(e) => setSearchEmail(e.target.value)}
+                  className="w-full border-[3px] border-[#0A0A0A] p-3 font-bold mb-4 focus:outline-none"
+                />
+                <div className="bg-white border-[3px] border-[#0A0A0A] overflow-x-auto">
+                  <table className="w-full text-left min-w-[400px]">
+                    <thead className="bg-gray-100 border-b-[3px] border-[#0A0A0A]">
+                      <tr>
+                        <th className="p-3 font-bold text-xs uppercase">User</th>
+                        <th className="p-3 font-bold text-xs uppercase">Current Role</th>
+                        <th className="p-3 font-bold text-xs uppercase text-right">Change Role</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {users
+                        .filter((u) => u.email?.toLowerCase().includes(searchEmail.toLowerCase()))
+                        .map((u) => {
+                          const uConfig = ROLE_CONFIG[u.role as keyof typeof ROLE_CONFIG] || ROLE_CONFIG.student;
+                          return (
+                            <tr key={u.id} className="border-b border-gray-200 last:border-0">
+                              <td className="p-3">
+                                <p className="font-bold text-sm">{u.email}</p>
+                                <p className="text-xs text-gray-500">{u.full_name || '—'}</p>
+                              </td>
+                              <td className="p-3">
+                                <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-bold uppercase border-[2px] border-[#0A0A0A] ${uConfig.bg} ${uConfig.text}`}>
+                                  {uConfig.icon} {uConfig.label}
+                                </span>
+                              </td>
+                              <td className="p-3 text-right">
+                                {u.role !== 'super_admin' && (
+                                  <select
+                                    value={u.role}
+                                    onChange={(e) => handleRoleChange(u.id, e.target.value)}
+                                    className="bg-white border-[2px] border-[#0A0A0A] text-xs font-bold p-2 uppercase cursor-pointer"
+                                  >
+                                    <option value="student">Student</option>
+                                    <option value="admin">Admin</option>
+                                  </select>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      {users.filter((u) => u.email?.toLowerCase().includes(searchEmail.toLowerCase())).length === 0 && (
+                        <tr>
+                          <td colSpan={3} className="p-6 text-center text-gray-400 font-bold">
+                            {users.length === 0 ? 'No members yet — run the DB Setup SQL first, then refresh.' : 'No users match your filter.'}
                           </td>
                         </tr>
-                      );
-                    })}
-                  {users.filter((u) => u.email?.toLowerCase().includes(searchEmail.toLowerCase())).length === 0 && (
-                    <tr>
-                      <td colSpan={3} className="p-6 text-center text-gray-400 font-bold">No users found.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         )}
 
