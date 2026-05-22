@@ -1,0 +1,6 @@
+# Gombe SS ICT Club — SPA routing for Apache (InfinityFree)
+Options -MultiViews
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [QSA,L]
