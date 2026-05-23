@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
@@ -18,6 +18,7 @@ interface AuthContextType {
   profile: Profile | null;
   role: Role | null;
   loading: boolean;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -25,12 +26,11 @@ const AuthContext = createContext<AuthContextType>({
   profile: null,
   role: null,
   loading: true,
+  refreshProfile: async () => {},
 });
 
 const SUPER_ADMIN_EMAIL = import.meta.env.VITE_SUPER_ADMIN_EMAIL || 'hpro453176@gmail.com';
 
-// Build a fallback profile from the Supabase user object alone
-// so the Account page always renders even if the profiles table is missing
 function buildFallbackProfile(u: User): Profile {
   const role: Role = u.email === SUPER_ADMIN_EMAIL ? 'super_admin' : 'student';
   return {
@@ -48,54 +48,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [role, setRole] = useState<Role | null>(null);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const u = session?.user ?? null;
-      setUser(u);
-      if (u) {
-        fetchProfile(u);
-      } else {
-        setLoading(false);
-      }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const u = session?.user ?? null;
-      setUser(u);
-      if (u) {
-        await fetchProfile(u);
-      } else {
-        setProfile(null);
-        setRole(null);
-        setLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
+  const mountedRef = useRef(true);
 
   const fetchProfile = async (currentUser: User) => {
     try {
-      // Always set a fallback immediately so the page never hangs
       const fallback = buildFallbackProfile(currentUser);
-      setProfile(fallback);
-      setRole(fallback.role);
+      if (mountedRef.current) {
+        setProfile(fallback);
+        setRole(fallback.role);
+      }
 
-      // Then try to get the real profile from Supabase
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', currentUser.id)
         .single();
 
+      if (!mountedRef.current) return;
+
       if (error) {
-        // Table might not exist yet — try to create the profile row
-        if (error.code === 'PGRST116' || error.code === '42P01') {
-          // Row not found or table doesn't exist — stick with fallback
-          console.warn('profiles table missing or row not found — using fallback profile');
-        } else {
-          // Try inserting a new profile row
+        if (error.code === 'PGRST116') {
+          // Row not found — try to insert
           const { data: newProfile } = await supabase
             .from('profiles')
             .insert([{
@@ -108,29 +81,83 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             .select()
             .single();
 
-          if (newProfile) {
+          if (newProfile && mountedRef.current) {
             setProfile(newProfile as Profile);
             setRole(newProfile.role as Role);
           }
         }
+        // For table-not-found (42P01) or any other error: keep fallback, it's already set above
       } else if (data) {
-        // Got real profile — use it (may have admin role assigned by super admin)
         setProfile(data as Profile);
         setRole(data.role as Role);
       }
     } catch (err) {
       console.error('fetchProfile error:', err);
-      // Always fall back gracefully — never leave page loading forever
-      const fallback = buildFallbackProfile(currentUser);
-      setProfile(fallback);
-      setRole(fallback.role);
+      // Fallback is already set — just ensure loading resolves
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 
+  const refreshProfile = async () => {
+    if (user) await fetchProfile(user);
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    // Safety net: if Supabase hangs for > 8s, release the loading gate
+    const loadingTimeout = setTimeout(() => {
+      if (mountedRef.current) {
+        console.warn('Auth load timed out — releasing loading gate');
+        setLoading(false);
+      }
+    }, 8000);
+
+    const init = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (!mountedRef.current) return;
+        if (error) throw error;
+        const u = session?.user ?? null;
+        setUser(u);
+        if (u) {
+          await fetchProfile(u);
+        } else {
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error('Auth init error:', err);
+        if (mountedRef.current) setLoading(false);
+      } finally {
+        clearTimeout(loadingTimeout);
+      }
+    };
+
+    init();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!mountedRef.current) return;
+      const u = session?.user ?? null;
+      setUser(u);
+      if (u) {
+        await fetchProfile(u);
+      } else {
+        setProfile(null);
+        setRole(null);
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      mountedRef.current = false;
+      clearTimeout(loadingTimeout);
+      subscription.unsubscribe();
+    };
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, profile, role, loading }}>
+    <AuthContext.Provider value={{ user, profile, role, loading, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );
