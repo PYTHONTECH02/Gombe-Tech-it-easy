@@ -197,6 +197,8 @@ function AdminPanel({ role }: { role: string }) {
   const [activeTab, setActiveTab] = useState<'announcements' | 'gaming' | 'schedule' | 'setup'>('announcements');
   const [sqlCopied, setSqlCopied] = useState(false);
 
+  const [dbError, setDbError] = useState<string | null>(null);
+
   // Announcement form
   const [annTitle, setAnnTitle] = useState('');
   const [annBody, setAnnBody] = useState('');
@@ -232,20 +234,41 @@ function AdminPanel({ role }: { role: string }) {
     fetchSessions();
   }, []);
 
+  const isTableMissing = (code: string) => code === '42P01' || code === 'PGRST200';
+
   const fetchAnnouncements = async () => {
     setAnnLoading(true);
     try {
-      const { data } = await supabase.from('announcements').select('*').order('created_at', { ascending: false }).limit(5);
-      if (data) setAnnouncements(data);
-    } catch(e) {} finally { setAnnLoading(false); }
+      const { data, error } = await supabase.from('announcements').select('*').order('created_at', { ascending: false }).limit(10);
+      if (error) {
+        if (isTableMissing(error.code)) {
+          setDbError('DB tables not set up yet. Click the ⚙️ DB Setup tab above and run the SQL in Supabase first.');
+        } else {
+          setDbError(error.message);
+        }
+      } else {
+        setDbError(null);
+        if (data) setAnnouncements(data);
+      }
+    } catch(e: any) {
+      setDbError(e.message || 'Failed to load announcements');
+    } finally { setAnnLoading(false); }
   };
 
   const fetchSessions = async () => {
     setSessionsLoading(true);
     try {
-      const { data } = await supabase.from('gaming_sessions').select('*').order('created_at', { ascending: false }).limit(5);
-      if (data) setSessions(data);
-    } catch(e) {} finally { setSessionsLoading(false); }
+      const { data, error } = await supabase.from('gaming_sessions').select('*').order('created_at', { ascending: false }).limit(10);
+      if (error) {
+        if (!isTableMissing(error.code)) {
+          toast({ variant: 'destructive', title: 'Error loading sessions', description: error.message });
+        }
+      } else {
+        if (data) setSessions(data);
+      }
+    } catch(e: any) {
+      toast({ variant: 'destructive', title: 'Error', description: e.message });
+    } finally { setSessionsLoading(false); }
   };
 
   const handlePostAnnouncement = async () => {
@@ -260,17 +283,32 @@ function AdminPanel({ role }: { role: string }) {
       setAnnTitle(''); setAnnBody(''); setAnnTag('INFO');
       fetchAnnouncements();
     } catch(e: any) {
-      toast({ variant: 'destructive', title: 'Error', description: e.message });
+      const isSetupNeeded = e.code === '42P01' || e.message?.includes('does not exist') || e.code === '42501';
+      toast({
+        variant: 'destructive',
+        title: isSetupNeeded ? 'Database not set up' : 'Error posting announcement',
+        description: isSetupNeeded
+          ? 'Go to ⚙️ DB Setup tab and run the SQL in Supabase first.'
+          : e.message,
+      });
     } finally { setAnnSaving(false); }
   };
 
   const handleDeleteAnnouncement = async (id: string) => {
     if (!confirm('Delete this announcement?')) return;
     try {
-      await supabase.from('announcements').delete().eq('id', id);
+      const { error } = await supabase.from('announcements').delete().eq('id', id);
+      if (error) throw error;
       setAnnouncements(announcements.filter(a => a.id !== id));
       toast({ title: 'Deleted' });
-    } catch(e: any) { toast({ variant: 'destructive', title: 'Error', description: e.message }); }
+    } catch(e: any) { toast({ variant: 'destructive', title: 'Delete failed', description: e.message }); }
+  };
+
+  const dbErrMsg = (e: any) => {
+    const isSetup = e.code === '42P01' || e.message?.includes('does not exist') || e.code === '42501';
+    return isSetup
+      ? { title: 'Database not set up', description: 'Go to ⚙️ DB Setup tab and run the SQL in Supabase first.' }
+      : { title: 'Error', description: e.message };
   };
 
   const handleAddSession = async () => {
@@ -290,17 +328,22 @@ function AdminPanel({ role }: { role: string }) {
       toast({ title: '🎮 Gaming session added!' });
       setGsTitle(''); setGsDay(''); setGsMonth(''); setGsTime(''); setGsVenue(''); setGsType(''); setGsSlots('');
     } catch(e: any) {
-      toast({ variant: 'destructive', title: 'Error', description: e.message });
+      const { title, description } = dbErrMsg(e);
+      toast({ variant: 'destructive', title, description });
     } finally { setGsSaving(false); }
   };
 
   const handleDeleteSession = async (id: string) => {
     if (!confirm('Delete this session?')) return;
     try {
-      await supabase.from('gaming_sessions').delete().eq('id', id);
+      const { error } = await supabase.from('gaming_sessions').delete().eq('id', id);
+      if (error) throw error;
       setSessions(sessions.filter(s => s.id !== id));
       toast({ title: 'Deleted' });
-    } catch(e: any) { toast({ variant: 'destructive', title: 'Error', description: e.message }); }
+    } catch(e: any) {
+      const { title, description } = dbErrMsg(e);
+      toast({ variant: 'destructive', title, description });
+    }
   };
 
   const handleAddSchedule = async () => {
@@ -318,7 +361,8 @@ function AdminPanel({ role }: { role: string }) {
       toast({ title: '📅 Schedule item added!' });
       setSchTitle(''); setSchDate(''); setSchTime(''); setSchLocation(''); setSchDesc('');
     } catch(e: any) {
-      toast({ variant: 'destructive', title: 'Error', description: e.message });
+      const { title, description } = dbErrMsg(e);
+      toast({ variant: 'destructive', title, description });
     } finally { setSchSaving(false); }
   };
 
@@ -368,6 +412,24 @@ function AdminPanel({ role }: { role: string }) {
           </button>
         )}
       </div>
+
+      {/* DB Error Banner */}
+      {dbError && (
+        <div className="bg-[#FF3B3B] border-[3px] border-[#0A0A0A] p-4 flex items-start gap-3">
+          <span className="text-white text-xl shrink-0">⚠️</span>
+          <div className="flex-1">
+            <p className="font-bold text-white text-sm">{dbError}</p>
+            {role === 'super_admin' && (
+              <button
+                onClick={() => setActiveTab('setup')}
+                className="mt-2 bg-white text-[#0A0A0A] font-bold uppercase text-xs px-3 py-1.5 border-[2px] border-[#0A0A0A] hover:bg-gray-100"
+              >
+                ⚙️ Open DB Setup
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Announcements Tab ── */}
       {activeTab === 'announcements' && (
